@@ -33,7 +33,15 @@ Outputs in `out_ref/` (`--view overlay|stick|both`, default both):
 - `angles.csv` per-frame angles; `beats.csv` pose at every beat + how far the nearest movement accent is from it
 - `report.txt` tempo, accent timing (ahead/behind the beat), range of motion per joint
 
-## 3. Compare yourself
+## 3. Practise it
+
+```
+python -m dancelab practice ref.mp4 --start 81 --end 92 -o out_practice [--solo]
+```
+- `clips/8count_NN_0.50x.mp4` (and 0.75x, 1.00x): each 8-count with a 4-beat lead-in, looped 4 times, picture mirrored so you can face the screen and use the arm on the same side (`--no-mirror` to turn off; `--speeds`, `--loops` to change).
+- `count_sheet.pdf` (+ a PNG per page): one page per 8-count with the stick pose on each count and a cue for what changes from the previous count.
+
+## 4. Compare yourself
 
 Record the same section (same framing, full body). Then:
 ```

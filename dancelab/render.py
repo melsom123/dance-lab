@@ -86,9 +86,12 @@ def mux_audio(silent_video: str, audio_src: str, out_path: str, audio_offset_s: 
 
 
 def overlay_video(video_path, track: P.PoseTrack, angles: dict, energy, beats, out_path, usable=None,
-                  jok=None, stick=False,
+                  jok=None, stick=False, flip=False,
                   show_angles=("l_elbow", "r_elbow", "l_knee", "r_knee", "torso_lean")):
-    """Skeleton + beat HUD video. stick=True draws on a black background instead of the footage."""
+    """Skeleton + beat HUD video. stick=True draws on a black background instead of the footage.
+
+    flip=True mirrors the footage; pass a flipped track (compare.flip_track) with it.
+    """
     cap = cv2.VideoCapture(video_path)
     fps, w, h = track.fps, track.width, track.height
     tmp = out_path + ".tmp.mp4"
@@ -104,6 +107,8 @@ def overlay_video(video_path, track: P.PoseTrack, angles: dict, energy, beats, o
             break
         if stick:
             frame = np.zeros_like(frame)
+        elif flip:
+            frame = cv2.flip(frame, 1)
         t = i / fps
         pts = track.image[i, :, :2] * np.array([w, h])
         if stick:

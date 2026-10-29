@@ -25,6 +25,15 @@ def mirror_track(t: P.PoseTrack) -> P.PoseTrack:
     return P.PoseTrack(t.fps, t.width, t.height, img, wld, t.vis[:, MIRROR_IDX], t.people, t.solo_only)
 
 
+def flip_track(t: P.PoseTrack) -> P.PoseTrack:
+    """Horizontally flip the picture without relabelling sides: the dancer's right arm is still
+    labelled right, but now appears on the right of the screen. This is what a "mirrored"
+    tutorial video is: facing the screen, you use the same arm as the side of the screen it's on."""
+    img = t.image.copy(); img[..., 0] = 1 - img[..., 0]
+    wld = t.world.copy(); wld[..., 0] = -wld[..., 0]
+    return P.PoseTrack(t.fps, t.width, t.height, img, wld, t.vis, t.people, t.solo_only)
+
+
 def _feature_matrix(angles: dict) -> np.ndarray:
     X = np.stack([angles[j] for j in COMPARE_JOINTS], axis=0) / 45.0   # degrees -> ~unit scale
     # Fill NaNs so DTW doesn't break

@@ -161,6 +161,29 @@ def cmd_compare(a):
     print(rep)
 
 
+def cmd_practice(a):
+    from . import practice as PR
+    os.makedirs(a.outdir, exist_ok=True)
+    video = prepare(a.video, a.start, a.end, a.outdir)
+    track = load_or_extract(video, a.outdir, a.model)
+    track.solo_only = a.solo
+    beats = music.track_beats(video, a.bpm)
+    if beats is None or len(beats.times) < 9:
+        raise SystemExit("Need music with at least one full 8-count to build practice material.")
+    mirror = not a.no_mirror
+    tr = C.flip_track(track) if mirror else track
+    angles = joint_angles(tr)
+    energy = motion_energy(tr)
+    full = os.path.join(a.outdir, "practice_full.mp4")
+    print("Rendering practice video ...")
+    render.overlay_video(video, tr, angles, energy, beats, full, usable_mask(tr), joint_ok(tr), flip=mirror)
+    speeds = [float(x) for x in a.speeds.split(",")]
+    clips = PR.practice_clips(full, beats, os.path.join(a.outdir, "clips"), speeds, a.loops)
+    pages = PR.count_sheet(tr, angles, beats, os.path.join(a.outdir, "count_sheet.pdf"), mirror,
+                           title=os.path.basename(a.video))
+    print(f"{len(clips)} practice clips in {a.outdir}/clips, count sheet with {pages} pages: count_sheet.pdf")
+
+
 def main():
     p = argparse.ArgumentParser(prog="dancelab")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -179,6 +202,20 @@ def main():
                     help="also write stick_filled.mp4 / angles_filled.csv: a continuous full-body estimate "
                          "spliced with the measured segments")
     an.set_defaults(func=cmd_analyze)
+    pr = sub.add_parser("practice", help="looped slow-motion clips per 8-count and a printable count sheet")
+    pr.add_argument("video")
+    pr.add_argument("-o", "--outdir", default="out_practice")
+    pr.add_argument("--start", type=float)
+    pr.add_argument("--end", type=float)
+    pr.add_argument("--speeds", default="0.5,0.75,1", help="comma-separated playback speeds (min 0.5)")
+    pr.add_argument("--loops", type=int, default=4)
+    pr.add_argument("--no-mirror", action="store_true",
+                    help="don't flip the picture (default flips it, like a mirrored tutorial, so you "
+                         "copy with the arm on the same side of the screen)")
+    pr.add_argument("--solo", action="store_true")
+    pr.add_argument("--bpm", type=float, default=120)
+    pr.add_argument("--model", default=DEFAULT_MODEL)
+    pr.set_defaults(func=cmd_practice)
     cp = sub.add_parser("compare", help="compare your recording against a reference")
     cp.add_argument("ref")
     cp.add_argument("you")
