@@ -109,6 +109,8 @@ def extract(video_path: str, model_path: str = DEFAULT_MODEL, max_seconds: float
             if i % 300 == 0:
                 print(f"  pose: {i} frames ({i / fps:.0f}s)")
     cap.release()
+    if not image:
+        raise RuntimeError(f"Could not decode any frames from {video_path}")
     track = PoseTrack(fps, w, h, np.array(image), np.array(world), np.array(vis))
     return fill_gaps(track)
 
@@ -116,7 +118,7 @@ def extract(video_path: str, model_path: str = DEFAULT_MODEL, max_seconds: float
 def fill_gaps(track: PoseTrack, max_gap_s: float = 0.5) -> PoseTrack:
     """Linearly interpolate short dropouts so angle curves stay continuous."""
     max_gap = int(max_gap_s * track.fps)
-    for arr in (track.image, track.world):
+    for arr in (track.image, track.world, track.vis):
         flat = arr.reshape(len(arr), -1)
         missing = np.isnan(flat[:, 0])
         if missing.all() or not missing.any():

@@ -21,6 +21,49 @@ TRIPLETS = {
 }
 
 
+BODY = [P.L_SHOULDER, P.R_SHOULDER, P.L_HIP, P.R_HIP, P.L_KNEE, P.R_KNEE, P.L_ANKLE, P.R_ANKLE]
+
+
+def usable_mask(track: P.PoseTrack, min_vis: float = 0.6, min_run_s: float = 1.0) -> np.ndarray:
+    """Frames showing a full-body dancer: body landmarks confidently visible and inside the frame.
+
+    Filters out cutaways (audience shots, close-ups with legs out of frame) where MediaPipe
+    hallucinates a skeleton. Runs shorter than min_run_s are dropped as flicker.
+    """
+    vis = np.nanmean(track.vis[:, BODY], axis=1)
+    xy = track.image[:, BODY, :2]
+    with np.errstate(invalid="ignore"):
+        inside = np.all((xy > -0.02) & (xy < 1.02), axis=(1, 2))
+        ok = (vis >= min_vis) & inside
+    min_run = int(min_run_s * track.fps)
+    t = 0
+    while t < len(ok):
+        if ok[t]:
+            e = t
+            while e < len(ok) and ok[e]:
+                e += 1
+            if e - t < min_run:
+                ok[t:e] = False
+            t = e
+        else:
+            t += 1
+    return ok
+
+
+def usable_segments(mask: np.ndarray, fps: float) -> list[tuple[float, float]]:
+    segs, t = [], 0
+    while t < len(mask):
+        if mask[t]:
+            e = t
+            while e < len(mask) and mask[e]:
+                e += 1
+            segs.append((t / fps, e / fps))
+            t = e
+        else:
+            t += 1
+    return segs
+
+
 def smooth(x: np.ndarray, fps: float, window_s: float = 0.15) -> np.ndarray:
     """Savitzky-Golay smoothing along time, skipping NaN rows."""
     win = max(5, int(window_s * fps) | 1)
@@ -53,15 +96,25 @@ def joint_angles(track: P.PoseTrack) -> dict[str, np.ndarray]:
     twist = np.degrees(np.arctan2(sh[:, 1], sh[:, 0]) - np.arctan2(hp[:, 1], hp[:, 0]))
     out["torso_twist"] = (twist + 180) % 360 - 180
 
-    # Hip sway / bounce in the image, in torso lengths (camera-scale independent)
+    # Hip sway / bounce in the image, relative to a 2 s moving average and measured in
+    # torso lengths, so camera zoom, cuts and travelling across the stage don't dominate.
     img = smooth(track.image[:, :, :2], track.fps)
-    hip_img = (img[:, P.L_HIP] + img[:, P.R_HIP]) / 2
-    sh_img = (img[:, P.L_SHOULDER] + img[:, P.R_SHOULDER]) / 2
     aspect = np.array([track.width, track.height])
-    torso_px = np.nanmedian(np.linalg.norm((sh_img - hip_img) * aspect, axis=1))
-    hip_px = hip_img * aspect
-    out["hip_sway"] = (hip_px[:, 0] - np.nanmean(hip_px[:, 0])) / torso_px
-    out["hip_bounce"] = -(hip_px[:, 1] - np.nanmean(hip_px[:, 1])) / torso_px  # up is positive
+    hip_px = (img[:, P.L_HIP] + img[:, P.R_HIP]) / 2 * aspect
+    sh_px = (img[:, P.L_SHOULDER] + img[:, P.R_SHOULDER]) / 2 * aspect
+    torso_px = np.linalg.norm(sh_px - hip_px, axis=1)
+    ok = usable_mask(track) & np.isfinite(torso_px)
+    win = int(2 * track.fps)
+    hip_rel = np.full_like(hip_px, np.nan)
+    for t in np.flatnonzero(ok):
+        lo, hi = max(0, t - win // 2), min(len(ok), t + win // 2 + 1)
+        sel = ok[lo:hi]
+        hip_rel[t] = (hip_px[t] - hip_px[lo:hi][sel].mean(axis=0)) / torso_px[t]
+    out["hip_sway"] = hip_rel[:, 0]
+    out["hip_bounce"] = -hip_rel[:, 1]  # up is positive
+    bad = ~usable_mask(track)
+    for v in out.values():
+        v[bad] = np.nan
     return out
 
 
@@ -73,7 +126,7 @@ def motion_energy(track: P.PoseTrack) -> np.ndarray:
     v = np.linalg.norm(np.gradient(w[:, joints], axis=0), axis=-1) * track.fps
     e = np.nansum(v, axis=1)
     e = smooth(e[:, None], track.fps, 0.12)[:, 0]
-    e[np.isnan(w[:, 0, 0])] = np.nan
+    e[np.isnan(w[:, 0, 0]) | ~usable_mask(track)] = np.nan
     return e
 
 

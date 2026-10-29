@@ -46,7 +46,7 @@ def mux_audio(silent_video: str, audio_src: str, out_path: str, audio_offset_s: 
                         "-pix_fmt", "yuv420p", out_path], check=True)
 
 
-def overlay_video(video_path, track: P.PoseTrack, angles: dict, energy, beats, out_path,
+def overlay_video(video_path, track: P.PoseTrack, angles: dict, energy, beats, out_path, usable=None,
                   show_angles=("l_elbow", "r_elbow", "l_knee", "r_knee", "torso_lean")):
     cap = cv2.VideoCapture(video_path)
     fps, w, h = track.fps, track.width, track.height
@@ -61,7 +61,10 @@ def overlay_video(video_path, track: P.PoseTrack, angles: dict, energy, beats, o
             break
         t = i / fps
         pts = track.image[i, :, :2] * np.array([w, h])
-        draw_skeleton(frame, pts)
+        if usable is None or usable[i]:
+            draw_skeleton(frame, pts)
+        else:
+            _text(frame, "no full-body dancer in shot", (12, h // 2), 0.7, (160, 160, 160))
 
         # Beat flash + count
         if len(beat_t):

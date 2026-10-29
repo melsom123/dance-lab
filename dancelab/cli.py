@@ -14,14 +14,26 @@ import numpy as np
 
 from . import compare as C
 from . import music, render
-from .features import joint_angles, motion_energy
+from .features import joint_angles, motion_energy, usable_mask, usable_segments
 from .pose import DEFAULT_MODEL, PoseTrack, extract
 
 
-def trim(video, start, end, outdir):
-    if start is None and end is None:
+def _opencv_can_read(video):
+    import cv2
+    cap = cv2.VideoCapture(video)
+    ok, _ = cap.read()
+    cap.release()
+    return ok
+
+
+def prepare(video, start, end, outdir, name="clip"):
+    """Trim if asked, and re-encode to H.264 when OpenCV can't decode the source (e.g. YouTube AV1)."""
+    if start is None and end is None and _opencv_can_read(video):
         return video
-    out = os.path.join(outdir, "clip.mp4")
+    out = os.path.join(outdir, f"{name}.mp4")
+    if os.path.exists(out) and os.path.getmtime(out) > os.path.getmtime(video):
+        return out
+    print(f"Re-encoding {video} -> {out}")
     cmd = ["ffmpeg", "-v", "error", "-y"]
     if start is not None:
         cmd += ["-ss", str(start)]
@@ -44,13 +56,17 @@ def load_or_extract(video, outdir, model, name="poses"):
 
 def cmd_analyze(a):
     os.makedirs(a.outdir, exist_ok=True)
-    video = trim(a.video, a.start, a.end, a.outdir)
+    video = prepare(a.video, a.start, a.end, a.outdir)
     track = load_or_extract(video, a.outdir, a.model)
     detected = np.isfinite(track.image[:, 0, 0]).mean()
+    usable = usable_mask(track)
     angles = joint_angles(track)
     energy = motion_energy(track)
     beats = music.track_beats(video, a.bpm)
     hits = music.hit_offsets(energy, track.fps, beats) if beats else None
+    if hits is not None and len(hits):
+        bf = np.clip((beats.times * track.fps).round().astype(int), 0, len(usable) - 1)
+        hits[~usable[bf]] = np.nan
 
     with open(os.path.join(a.outdir, "angles.csv"), "w", newline="") as f:
         wr = csv.writer(f)
@@ -74,9 +90,13 @@ def cmd_analyze(a):
     render.plot_angles(angles, energy, track.fps, beats, os.path.join(a.outdir, "angles.png"), hits,
                        title=os.path.basename(a.video))
     print("Rendering overlay video ...")
-    render.overlay_video(video, track, angles, energy, beats, os.path.join(a.outdir, "overlay.mp4"))
+    render.overlay_video(video, track, angles, energy, beats, os.path.join(a.outdir, "overlay.mp4"), usable)
 
-    lines = [f"Video: {a.video}", f"Frames: {len(track.image)} @ {track.fps:.1f} fps, person detected in {detected:.0%}"]
+    lines = [f"Video: {a.video}", f"Frames: {len(track.image)} @ {track.fps:.1f} fps, person detected in {detected:.0%}, "
+             f"full-body dancer usable in {usable.mean():.0%}"]
+    segs = [(s, e) for s, e in usable_segments(usable, track.fps) if e - s >= 3]
+    if segs:
+        lines.append("Usable sections (3 s or longer): " + ", ".join(f"{s:.0f}-{e:.0f}s" for s, e in segs))
     if beats is not None:
         lines.append(f"Tempo: {beats.tempo:.1f} BPM, {len(beats.times)} beats")
         if hits is not None and np.isfinite(hits).any():
@@ -97,9 +117,10 @@ def cmd_analyze(a):
 
 def cmd_compare(a):
     os.makedirs(a.outdir, exist_ok=True)
-    ref_video = trim(a.ref, a.ref_start, a.ref_end, a.outdir)
+    ref_video = prepare(a.ref, a.ref_start, a.ref_end, a.outdir, "ref_clip")
+    you_video = prepare(a.you, None, None, a.outdir, "you_clip")
     ref = load_or_extract(ref_video, a.outdir, a.model, "ref_poses")
-    you = load_or_extract(a.you, a.outdir, a.model, "you_poses")
+    you = load_or_extract(you_video, a.outdir, a.model, "you_poses")
     if a.mirror:
         you_for_angles = C.mirror_track(you)
     else:
@@ -108,7 +129,7 @@ def cmd_compare(a):
     ref_to_you, err = C.align(ref, you_for_angles, ra, ya)
     beats = music.track_beats(ref_video, a.bpm)
     print("Rendering comparison video ...")
-    C.comparison_video(ref_video, a.you, ref, you, ref_to_you, err, os.path.join(a.outdir, "compare.mp4"), beats,
+    C.comparison_video(ref_video, you_video, ref, you, ref_to_you, err, os.path.join(a.outdir, "compare.mp4"), beats,
                          mirror=a.mirror)
     rep = C.summary(err, ref.fps, beats)
     open(os.path.join(a.outdir, "compare_report.txt"), "w").write(rep + "\n")
