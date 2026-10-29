@@ -13,6 +13,7 @@ import subprocess
 import numpy as np
 
 from . import compare as C
+from . import fill as F
 from . import music, render
 from .features import joint_angles, joint_ok, motion_energy, usable_mask, usable_segments
 from .pose import DEFAULT_MODEL, PoseTrack, extract
@@ -97,6 +98,21 @@ def cmd_analyze(a):
             render.overlay_video(video, track, angles, energy, beats, os.path.join(a.outdir, f"{view}.mp4"),
                                  usable, jok, stick=stick)
 
+    if a.fill:
+        fp = F.fill(track, beats)
+        print("Rendering filled stick video ...")
+        render.filled_stick_video(video, track, fp, beats, os.path.join(a.outdir, "stick_filled.mp4"))
+        fa = joint_angles(F.filled_track(track, fp))
+        with open(os.path.join(a.outdir, "angles_filled.csv"), "w", newline="") as f:
+            wr = csv.writer(f)
+            names = [n for n in fa if not n.startswith("hip_")]
+            wr.writerow(["time_s", "source"] + names)
+            for i, t in enumerate(track.times):
+                vals = [f"{fa[n][i]:.1f}" if fp.estimated[i] else "" for n in names]
+                wr.writerow([f"{t:.3f}", F.SOURCE_NAMES[fp.frame_source(i)]] + vals)
+        share = {F.SOURCE_NAMES[k]: (np.array([fp.frame_source(i) for i in range(len(track.times))]) == k).mean()
+                 for k in F.SOURCE_NAMES}
+
     lines = [f"Video: {a.video}", f"Frames: {len(track.image)} @ {track.fps:.1f} fps, person detected in {detected:.0%}, "
              f"dancer usable in {usable.mean():.0%} "
              f"(legs in view in {(usable & jok[:, [25, 26, 27, 28]].all(axis=1)).mean():.0%})"]
@@ -112,6 +128,8 @@ def cmd_analyze(a):
                          f"{len(h)}/{len(hits)} beats have a clear accent")
     else:
         lines.append("No audio track found; beat analysis skipped.")
+    if a.fill:
+        lines.append("Filled version (stick_filled.mp4): " + ", ".join(f"{k} {v:.0%}" for k, v in share.items()))
     rng = {n: (np.nanpercentile(v, 5), np.nanpercentile(v, 95)) for n, v in angles.items()}
     lines.append("Range of motion (5th-95th percentile):")
     lines += [f"  {n:<12} {lo:7.1f} .. {hi:7.1f}" for n, (lo, hi) in rng.items()]
@@ -157,6 +175,9 @@ def main():
     an.add_argument("--model", default=DEFAULT_MODEL)
     an.add_argument("--solo", action="store_true",
                     help="skip frames with several people in shot (e.g. a film cutting to the audience)")
+    an.add_argument("--fill", action="store_true",
+                    help="also write stick_filled.mp4 / angles_filled.csv: a continuous full-body estimate "
+                         "spliced with the measured segments")
     an.set_defaults(func=cmd_analyze)
     cp = sub.add_parser("compare", help="compare your recording against a reference")
     cp.add_argument("ref")

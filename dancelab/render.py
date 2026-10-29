@@ -184,3 +184,67 @@ def plot_angles(angles: dict, energy, fps, beats, out_png, hits=None, title=""):
     fig.tight_layout()
     fig.savefig(out_png, dpi=110)
     plt.close(fig)
+
+
+def filled_stick_video(video_path, track: P.PoseTrack, fp, beats, out_path, torso_frac: float = 0.2):
+    """Stick figure of the filled pose, with measured limbs in colour and estimated ones in grey.
+
+    A small inset shows the real footage so you can see what the estimate is covering for.
+    """
+    from .fill import BORROWED, INTERPOLATED, MEASURED, MODEL_GUESS, NONE
+    cap = cv2.VideoCapture(video_path)
+    fps, w, h = track.fps, track.width, track.height
+    tmp = out_path + ".tmp.mp4"
+    vw = cv2.VideoWriter(tmp, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
+    centre = np.array([w / 2, h * 0.5])
+    scale = torso_frac * h
+    beat_t = beats.times if beats is not None else np.array([])
+    iw, ih = w // 4, h // 4
+    grey = {MODEL_GUESS: (170, 170, 170), INTERPOLATED: (120, 120, 120), BORROWED: (120, 120, 120)}
+    labels = {MEASURED: ("MEASURED", (80, 220, 80)),
+              MODEL_GUESS: ("PARTLY ESTIMATED: off-screen limbs are the model's guess", (170, 170, 170)),
+              INTERPOLATED: ("ESTIMATED: interpolated across a gap", (0, 170, 255)),
+              BORROWED: ("ESTIMATED: borrowed from the same count at {src}", (0, 170, 255)),
+              NONE: ("outside the dance: no estimate", (120, 120, 120))}
+    for i in range(len(fp.image_norm)):
+        ok, real = cap.read()
+        if not ok:
+            break
+        frame = np.zeros_like(real)
+        pts = fp.image_norm[i] * scale + centre
+        src = fp.source[i]
+        drawn = P.EDGES if fp.frame_source(i) != NONE else []
+        for a, b in drawn:
+            worst = max(src[a], src[b])
+            if worst == MEASURED:
+                col = LEFT_COLOR if (a in P.LEFT_SIDE and b in P.LEFT_SIDE) else (
+                    RIGHT_COLOR if (a not in P.LEFT_SIDE and b not in P.LEFT_SIDE) else (200, 200, 200))
+                thick = 4
+            else:
+                col, thick = grey[worst], 3
+            cv2.line(frame, tuple(map(int, pts[a])), tuple(map(int, pts[b])), col, thick, cv2.LINE_AA)
+        for j in range(11, 33 if drawn else 11):
+            cv2.circle(frame, tuple(map(int, pts[j])), 4, (255, 255, 255) if src[j] == MEASURED else (110, 110, 110),
+                       -1, cv2.LINE_AA)
+
+        fs = fp.frame_source(i)
+        text, col = labels[fs]
+        if fs == BORROWED:
+            s = fp.borrowed_from[i] / fps
+            text = text.format(src=f"{int(s // 60)}:{s % 60:04.1f}")
+        _text(frame, text, (12, 30), 0.7, col, 2)
+
+        if len(beat_t):
+            last = np.searchsorted(beat_t, i / fps, side="right") - 1
+            if last >= 0:
+                _text(frame, str(beats.counts[last]), (w - 90, 70), 2.0, (0, 255, 255), 4)
+                if i / fps - beat_t[last] < 0.12:
+                    cv2.rectangle(frame, (0, 0), (w - 1, h - 1), (0, 255, 255), max(6, w // 100))
+
+        frame[h - ih - 10:h - 10, w - iw - 10:w - 10] = cv2.resize(real, (iw, ih))
+        cv2.rectangle(frame, (w - iw - 10, h - ih - 10), (w - 10, h - 10), (90, 90, 90), 1)
+        vw.write(frame)
+    cap.release()
+    vw.release()
+    mux_audio(tmp, video_path, out_path)
+    os.remove(tmp)

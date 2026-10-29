@@ -28,6 +28,7 @@ Use `--solo` for film clips that cut to the audience: frames with several people
 Outputs in `out_ref/` (`--view overlay|stick|both`, default both):
 - `stick.mp4` skeleton only on black, centred and scaled to a steady size
 - `overlay.mp4` skeleton (blue = dancer's left, orange = right), beat flash, 1–8 count, live angles, movement-energy strip with beat ticks
+- with `--fill`: `stick_filled.mp4`, a continuous full-body estimate spliced with the measured parts (measured limbs in colour, estimated ones in grey, label says how each frame was estimated, real footage inset), and `angles_filled.csv`. Estimates of long gaps borrow the same point of the 8-count from elsewhere in the dance, so they assume the routine repeats.
 - `angles.png` joint-angle curves with beat lines (red = estimated count 1)
 - `angles.csv` per-frame angles; `beats.csv` pose at every beat + how far the nearest movement accent is from it
 - `report.txt` tempo, accent timing (ahead/behind the beat), range of motion per joint
