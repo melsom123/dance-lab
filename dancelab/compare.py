@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 
 from . import pose as P
-from .features import joint_angles
+from .features import joint_angles, joint_ok
 from .render import GHOST_COLOR, _text, draw_skeleton, mux_audio
 
 COMPARE_JOINTS = ["l_elbow", "r_elbow", "l_shoulder", "r_shoulder", "l_hip", "r_hip",
@@ -82,6 +82,7 @@ def comparison_video(ref_video, you_video, ref: P.PoseTrack, you: P.PoseTrack, r
     yw = int(you.width * panel_h / you.height)
     tmp = out_path + ".tmp.mp4"
     vw = cv2.VideoWriter(tmp, cv2.VideoWriter_fourcc(*"mp4v"), ref.fps, (rw + yw, panel_h))
+    rok, yok = joint_ok(ref), joint_ok(you)
     total_err = np.nanmean(np.stack([err[j] for j in COMPARE_JOINTS]), axis=0)
     worst = lambda i: sorted(COMPARE_JOINTS, key=lambda j: -np.nan_to_num(err[j][i]))[:3]
     for i in range(len(ref_to_you)):
@@ -92,15 +93,16 @@ def comparison_video(ref_video, you_video, ref: P.PoseTrack, you: P.PoseTrack, r
         yf = you_frames[j].copy()
         rpts = ref.image[i, :, :2] * [ref.width, ref.height]
         ypts = you.image[j, :, :2] * [you.width, you.height]
-        draw_skeleton(rf, rpts)
-        draw_skeleton(yf, ypts)
-        gref = rpts
-        if mirror:  # flip the reference about its own hip centre so it matches your mirror-image dancing
+        draw_skeleton(rf, rpts, ok=rok[i])
+        draw_skeleton(yf, ypts, ok=yok[j])
+        gref, gok = rpts, rok[i]
+        if mirror:
+            gok = rok[i][MIRROR_IDX]  # flip the reference about its own hip centre so it matches your mirror-image dancing
             gref = rpts[MIRROR_IDX].copy()
             gref[:, 0] = (rpts[P.L_HIP, 0] + rpts[P.R_HIP, 0]) - gref[:, 0]
-        g = _ghost_points(gref, ypts) if np.isfinite(rpts).all() and np.isfinite(ypts).all() else None
+        g = _ghost_points(gref, ypts) if np.isfinite(rpts[P.L_SHOULDER:P.R_HIP + 1]).all() and np.isfinite(ypts[P.L_SHOULDER:P.R_HIP + 1]).all() else None
         if g is not None:
-            draw_skeleton(yf, g, GHOST_COLOR, GHOST_COLOR, thickness=2, alpha=0.7)
+            draw_skeleton(yf, g, GHOST_COLOR, GHOST_COLOR, thickness=2, alpha=0.7, ok=gok)
         rf = cv2.resize(rf, (rw, panel_h)); yf = cv2.resize(yf, (yw, panel_h))
         _text(rf, "REFERENCE", (10, 25), 0.7)
         _text(yf, "YOU (time-aligned)  green = reference pose", (10, 25), 0.6)

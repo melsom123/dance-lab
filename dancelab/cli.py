@@ -14,7 +14,7 @@ import numpy as np
 
 from . import compare as C
 from . import music, render
-from .features import joint_angles, motion_energy, usable_mask, usable_segments
+from .features import joint_angles, joint_ok, motion_energy, usable_mask, usable_segments
 from .pose import DEFAULT_MODEL, PoseTrack, extract
 
 
@@ -60,6 +60,7 @@ def cmd_analyze(a):
     track = load_or_extract(video, a.outdir, a.model)
     detected = np.isfinite(track.image[:, 0, 0]).mean()
     usable = usable_mask(track)
+    jok = joint_ok(track)
     angles = joint_angles(track)
     energy = motion_energy(track)
     beats = music.track_beats(video, a.bpm)
@@ -89,11 +90,15 @@ def cmd_analyze(a):
 
     render.plot_angles(angles, energy, track.fps, beats, os.path.join(a.outdir, "angles.png"), hits,
                        title=os.path.basename(a.video))
-    print("Rendering overlay video ...")
-    render.overlay_video(video, track, angles, energy, beats, os.path.join(a.outdir, "overlay.mp4"), usable)
+    for view, stick in (("overlay", False), ("stick", True)):
+        if a.view in (view, "both"):
+            print(f"Rendering {view} video ...")
+            render.overlay_video(video, track, angles, energy, beats, os.path.join(a.outdir, f"{view}.mp4"),
+                                 usable, jok, stick=stick)
 
     lines = [f"Video: {a.video}", f"Frames: {len(track.image)} @ {track.fps:.1f} fps, person detected in {detected:.0%}, "
-             f"full-body dancer usable in {usable.mean():.0%}"]
+             f"dancer usable in {usable.mean():.0%} "
+             f"(legs in view in {(usable & jok[:, [25, 26, 27, 28]].all(axis=1)).mean():.0%})"]
     segs = [(s, e) for s, e in usable_segments(usable, track.fps) if e - s >= 3]
     if segs:
         lines.append("Usable sections (3 s or longer): " + ", ".join(f"{s:.0f}-{e:.0f}s" for s, e in segs))
@@ -112,7 +117,7 @@ def cmd_analyze(a):
     report = "\n".join(lines)
     open(os.path.join(a.outdir, "report.txt"), "w").write(report + "\n")
     print(report)
-    print(f"\nOutputs in {a.outdir}: overlay.mp4, angles.png, angles.csv, beats.csv, report.txt")
+    print(f"\nOutputs in {a.outdir}: overlay.mp4 / stick.mp4, angles.png, angles.csv, beats.csv, report.txt")
 
 
 def cmd_compare(a):
@@ -145,6 +150,8 @@ def main():
     an.add_argument("--start", type=float)
     an.add_argument("--end", type=float)
     an.add_argument("--bpm", type=float, default=120, help="starting guess for the tempo tracker")
+    an.add_argument("--view", choices=["overlay", "stick", "both"], default="both",
+                    help="overlay = skeleton on the footage, stick = skeleton on black (default: both)")
     an.add_argument("--model", default=DEFAULT_MODEL)
     an.set_defaults(func=cmd_analyze)
     cp = sub.add_parser("compare", help="compare your recording against a reference")

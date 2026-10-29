@@ -47,6 +47,7 @@ class PoseTrack:
     image: np.ndarray   # (T, 33, 3) normalized x, y in [0,1] and relative z
     world: np.ndarray   # (T, 33, 3) metres, hip-centred, y points down
     vis: np.ndarray     # (T, 33) visibility in [0,1]; NaN rows where nobody was detected
+    people: np.ndarray | None = None  # (T,) number of sizeable people detected in the frame
 
     @property
     def times(self) -> np.ndarray:
@@ -54,12 +55,23 @@ class PoseTrack:
 
     def save(self, path: str) -> None:
         np.savez_compressed(path, fps=self.fps, width=self.width, height=self.height,
-                            image=self.image, world=self.world, vis=self.vis)
+                            image=self.image, world=self.world, vis=self.vis,
+                            people=self.people if self.people is not None else np.ones(len(self.image)))
 
     @classmethod
     def load(cls, path: str) -> "PoseTrack":
         d = np.load(path)
-        return cls(float(d["fps"]), int(d["width"]), int(d["height"]), d["image"], d["world"], d["vis"])
+        people = d["people"] if "people" in d else None
+        return cls(float(d["fps"]), int(d["width"]), int(d["height"]), d["image"], d["world"], d["vis"], people)
+
+
+MAX_PEOPLE = 4
+
+
+def _body_size(landmarks) -> float:
+    """Height of the bounding box of the confidently visible landmarks (normalized image units)."""
+    ys = [p.y for p in landmarks if p.visibility > 0.5]
+    return (max(ys) - min(ys)) if len(ys) >= 2 else 0.0
 
 
 def ensure_model(path: str = DEFAULT_MODEL) -> str:
@@ -79,7 +91,7 @@ def extract(video_path: str, model_path: str = DEFAULT_MODEL, max_seconds: float
     opts = vision.PoseLandmarkerOptions(
         base_options=BaseOptions(model_asset_path=ensure_model(model_path)),
         running_mode=vision.RunningMode.VIDEO,
-        num_poses=1,
+        num_poses=MAX_PEOPLE,
         min_pose_detection_confidence=0.5,
         min_tracking_confidence=0.5,
     )
@@ -87,7 +99,7 @@ def extract(video_path: str, model_path: str = DEFAULT_MODEL, max_seconds: float
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    image, world, vis = [], [], []
+    image, world, vis, people = [], [], [], []
     nan = np.full((33, 3), np.nan)
     with vision.PoseLandmarker.create_from_options(opts) as landmarker:
         i = 0
@@ -99,19 +111,24 @@ def extract(video_path: str, model_path: str = DEFAULT_MODEL, max_seconds: float
             res = landmarker.detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb),
                                               int(round(i * 1000 / fps)))
             if res.pose_landmarks:
-                lm, wl = res.pose_landmarks[0], res.pose_world_landmarks[0]
+                # Several people may be detected (e.g. an audience shot). Track the biggest one,
+                # and count how many others are of comparable size.
+                sizes = [_body_size(lm) for lm in res.pose_landmarks]
+                k = int(np.argmax(sizes))
+                people.append(sum(sz >= 0.5 * sizes[k] for sz in sizes))
+                lm, wl = res.pose_landmarks[k], res.pose_world_landmarks[k]
                 image.append([[p.x, p.y, p.z] for p in lm])
                 world.append([[p.x, p.y, p.z] for p in wl])
                 vis.append([p.visibility for p in lm])
             else:
-                image.append(nan); world.append(nan); vis.append(np.full(33, np.nan))
+                image.append(nan); world.append(nan); vis.append(np.full(33, np.nan)); people.append(0)
             i += 1
             if i % 300 == 0:
                 print(f"  pose: {i} frames ({i / fps:.0f}s)")
     cap.release()
     if not image:
         raise RuntimeError(f"Could not decode any frames from {video_path}")
-    track = PoseTrack(fps, w, h, np.array(image), np.array(world), np.array(vis))
+    track = PoseTrack(fps, w, h, np.array(image), np.array(world), np.array(vis), np.array(people))
     return fill_gaps(track)
 
 

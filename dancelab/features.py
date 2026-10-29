@@ -21,21 +21,11 @@ TRIPLETS = {
 }
 
 
-BODY = [P.L_SHOULDER, P.R_SHOULDER, P.L_HIP, P.R_HIP, P.L_KNEE, P.R_KNEE, P.L_ANKLE, P.R_ANKLE]
+TORSO = [P.L_SHOULDER, P.R_SHOULDER, P.L_HIP, P.R_HIP]
 
 
-def usable_mask(track: P.PoseTrack, min_vis: float = 0.6, min_run_s: float = 1.0) -> np.ndarray:
-    """Frames showing a full-body dancer: body landmarks confidently visible and inside the frame.
-
-    Filters out cutaways (audience shots, close-ups with legs out of frame) where MediaPipe
-    hallucinates a skeleton. Runs shorter than min_run_s are dropped as flicker.
-    """
-    vis = np.nanmean(track.vis[:, BODY], axis=1)
-    xy = track.image[:, BODY, :2]
-    with np.errstate(invalid="ignore"):
-        inside = np.all((xy > -0.02) & (xy < 1.02), axis=(1, 2))
-        ok = (vis >= min_vis) & inside
-    min_run = int(min_run_s * track.fps)
+def _drop_short_runs(ok: np.ndarray, min_run: int) -> np.ndarray:
+    ok = ok.copy()
     t = 0
     while t < len(ok):
         if ok[t]:
@@ -48,6 +38,26 @@ def usable_mask(track: P.PoseTrack, min_vis: float = 0.6, min_run_s: float = 1.0
         else:
             t += 1
     return ok
+
+
+def joint_ok(track: P.PoseTrack, min_vis: float = 0.6) -> np.ndarray:
+    """(T, 33) bool: landmark confidently visible and inside the frame."""
+    xy = track.image[:, :, :2]
+    with np.errstate(invalid="ignore"):
+        return (np.nan_to_num(track.vis) >= min_vis) & np.all((xy > -0.02) & (xy < 1.02), axis=2)
+
+
+def usable_mask(track: P.PoseTrack, min_run_s: float = 1.0) -> np.ndarray:
+    """Frames worth analyzing: one dancer in shot with at least the torso (shoulders + hips) visible.
+
+    Legs or arms may be out of frame (half-body shots); those limbs are masked per joint by
+    joint_ok. Frames with several similar-sized people (audience shots) are rejected, since
+    we can't tell which one is the dancer. Runs shorter than min_run_s are dropped as flicker.
+    """
+    ok = joint_ok(track)[:, TORSO].all(axis=1)
+    if track.people is not None:
+        ok &= track.people <= 1
+    return _drop_short_runs(ok, int(min_run_s * track.fps))
 
 
 def usable_segments(mask: np.ndarray, fps: float) -> list[tuple[float, float]]:
@@ -103,7 +113,7 @@ def joint_angles(track: P.PoseTrack) -> dict[str, np.ndarray]:
     hip_px = (img[:, P.L_HIP] + img[:, P.R_HIP]) / 2 * aspect
     sh_px = (img[:, P.L_SHOULDER] + img[:, P.R_SHOULDER]) / 2 * aspect
     torso_px = np.linalg.norm(sh_px - hip_px, axis=1)
-    ok = usable_mask(track) & np.isfinite(torso_px)
+    ok = usable_mask(track) & joint_ok(track)[:, TORSO].all(axis=1) & np.isfinite(torso_px)
     win = int(2 * track.fps)
     hip_rel = np.full_like(hip_px, np.nan)
     for t in np.flatnonzero(ok):
@@ -112,9 +122,11 @@ def joint_angles(track: P.PoseTrack) -> dict[str, np.ndarray]:
         hip_rel[t] = (hip_px[t] - hip_px[lo:hi][sel].mean(axis=0)) / torso_px[t]
     out["hip_sway"] = hip_rel[:, 0]
     out["hip_bounce"] = -hip_rel[:, 1]  # up is positive
-    bad = ~usable_mask(track)
-    for v in out.values():
-        v[bad] = np.nan
+    usable = usable_mask(track)
+    jok = joint_ok(track)
+    for name, v in out.items():
+        needed = TRIPLETS[name] if name in TRIPLETS else TORSO
+        v[~(usable & jok[:, list(needed)].all(axis=1))] = np.nan
     return out
 
 
@@ -124,9 +136,13 @@ def motion_energy(track: P.PoseTrack) -> np.ndarray:
     joints = [P.L_ELBOW, P.R_ELBOW, P.L_WRIST, P.R_WRIST, P.L_KNEE, P.R_KNEE,
               P.L_ANKLE, P.R_ANKLE, P.L_HIP, P.R_HIP, P.L_SHOULDER, P.R_SHOULDER]
     v = np.linalg.norm(np.gradient(w[:, joints], axis=0), axis=-1) * track.fps
-    e = np.nansum(v, axis=1)
-    e = smooth(e[:, None], track.fps, 0.12)[:, 0]
-    e[np.isnan(w[:, 0, 0]) | ~usable_mask(track)] = np.nan
+    v[~joint_ok(track)[:, joints]] = np.nan
+    # Mean over the joints in view (times the joint count), so half-body shots stay on the same scale
+    with np.errstate(invalid="ignore"):
+        e = np.nanmean(v, axis=1) * len(joints)
+    usable = usable_mask(track) & np.isfinite(e)
+    e = np.where(usable, e, np.nan)
+    e[usable] = smooth(e[usable][:, None], track.fps, 0.12)[:, 0]
     return e
 
 

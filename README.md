@@ -23,7 +23,8 @@ Best results: one dancer, full body in frame (feet included), static camera, fac
 ```
 python -m dancelab analyze ref.mp4 --start 30 --end 60 -o out_ref
 ```
-Outputs in `out_ref/`:
+Outputs in `out_ref/` (`--view overlay|stick|both`, default both):
+- `stick.mp4` skeleton only on black, centred and scaled to a steady size
 - `overlay.mp4` skeleton (blue = dancer's left, orange = right), beat flash, 1–8 count, live angles, movement-energy strip with beat ticks
 - `angles.png` joint-angle curves with beat lines (red = estimated count 1)
 - `angles.csv` per-frame angles; `beats.csv` pose at every beat + how far the nearest movement accent is from it

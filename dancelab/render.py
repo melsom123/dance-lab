@@ -14,15 +14,26 @@ RIGHT_COLOR = (0, 140, 255)   # orange for the dancer's right
 GHOST_COLOR = (80, 255, 80)
 
 
-def draw_skeleton(frame, pts_px, color_left=LEFT_COLOR, color_right=RIGHT_COLOR, thickness=3, alpha=1.0):
-    if pts_px is None or np.isnan(pts_px).any():
+def draw_skeleton(frame, pts_px, color_left=LEFT_COLOR, color_right=RIGHT_COLOR, thickness=3, alpha=1.0,
+                  ok=None):
+    """Draw the skeleton. ok is an optional (33,) bool mask; edges touching a masked joint are skipped."""
+    if pts_px is None:
         return frame
+    if ok is None:
+        if np.isnan(pts_px).any():
+            return frame
+        ok = np.ones(33, bool)
+    ok = ok & np.isfinite(pts_px).all(axis=1)
     layer = frame.copy() if alpha < 1 else frame
     for a, b in P.EDGES:
+        if not (ok[a] and ok[b]):
+            continue
         col = color_left if (a in P.LEFT_SIDE and b in P.LEFT_SIDE) else (
             color_right if (a not in P.LEFT_SIDE and b not in P.LEFT_SIDE) else (200, 200, 200))
         cv2.line(layer, tuple(map(int, pts_px[a])), tuple(map(int, pts_px[b])), col, thickness, cv2.LINE_AA)
     for i in range(11, 33):
+        if not ok[i]:
+            continue
         cv2.circle(layer, tuple(map(int, pts_px[i])), thickness + 1, (255, 255, 255), -1, cv2.LINE_AA)
     if alpha < 1:
         cv2.addWeighted(layer, alpha, frame, 1 - alpha, 0, dst=frame)
@@ -32,6 +43,34 @@ def draw_skeleton(frame, pts_px, color_left=LEFT_COLOR, color_right=RIGHT_COLOR,
 def _text(img, s, org, scale=0.6, color=(255, 255, 255), thick=1):
     cv2.putText(img, s, org, cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), thick + 3, cv2.LINE_AA)
     cv2.putText(img, s, org, cv2.FONT_HERSHEY_SIMPLEX, scale, color, thick, cv2.LINE_AA)
+
+
+def _stick_framing(track: P.PoseTrack, torso_frac: float = 0.2):
+    """Return f(i, pts) that centres the dancer and scales them to a steady size.
+
+    Hip centre and torso length are smoothed over ~0.5 s so the figure doesn't jitter,
+    but follow cuts and zooms within a few frames.
+    """
+    from scipy.ndimage import median_filter
+    wh = np.array([track.width, track.height])
+    img = track.image[:, :, :2] * wh
+    hip = (img[:, P.L_HIP] + img[:, P.R_HIP]) / 2
+    torso = np.linalg.norm((img[:, P.L_SHOULDER] + img[:, P.R_SHOULDER]) / 2 - hip, axis=1)
+    k = max(3, int(track.fps / 2) | 1)
+    def fill(x):
+        x = x.copy()
+        bad = ~np.isfinite(x)
+        if bad.all():
+            return np.zeros_like(x)
+        x[bad] = np.interp(np.flatnonzero(bad), np.flatnonzero(~bad), x[~bad])
+        return median_filter(x, size=k, mode="nearest")
+    hx, hy, ts = fill(hip[:, 0]), fill(hip[:, 1]), fill(torso)
+    target = torso_frac * track.height
+    centre = np.array([track.width / 2, track.height * 0.5])
+    def f(i, pts):
+        scale = target / ts[i] if ts[i] > 1 else 1.0
+        return (pts - [hx[i], hy[i]]) * scale + centre
+    return f
 
 
 def mux_audio(silent_video: str, audio_src: str, out_path: str, audio_offset_s: float = 0.0):
@@ -47,24 +86,32 @@ def mux_audio(silent_video: str, audio_src: str, out_path: str, audio_offset_s: 
 
 
 def overlay_video(video_path, track: P.PoseTrack, angles: dict, energy, beats, out_path, usable=None,
+                  jok=None, stick=False,
                   show_angles=("l_elbow", "r_elbow", "l_knee", "r_knee", "torso_lean")):
+    """Skeleton + beat HUD video. stick=True draws on a black background instead of the footage."""
     cap = cv2.VideoCapture(video_path)
     fps, w, h = track.fps, track.width, track.height
     tmp = out_path + ".tmp.mp4"
     vw = cv2.VideoWriter(tmp, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
     beat_t = beats.times if beats else np.array([])
+    if stick:
+        frame_fn = _stick_framing(track)
     e_max = np.nanpercentile(energy, 98) if np.isfinite(energy).any() else 1
     strip_h, strip_s = max(60, h // 8), 4.0   # energy strip: last/next 2 s
     for i in range(len(track.image)):
         ok, frame = cap.read()
         if not ok:
             break
+        if stick:
+            frame = np.zeros_like(frame)
         t = i / fps
         pts = track.image[i, :, :2] * np.array([w, h])
+        if stick:
+            pts = frame_fn(i, pts)
         if usable is None or usable[i]:
-            draw_skeleton(frame, pts)
+            draw_skeleton(frame, pts, thickness=4 if stick else 3, ok=None if jok is None else jok[i])
         else:
-            _text(frame, "no full-body dancer in shot", (12, h // 2), 0.7, (160, 160, 160))
+            _text(frame, "no single dancer in shot", (12, h // 2), 0.7, (160, 160, 160))
 
         # Beat flash + count
         if len(beat_t):
