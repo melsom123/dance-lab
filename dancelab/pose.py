@@ -48,6 +48,7 @@ class PoseTrack:
     world: np.ndarray   # (T, 33, 3) metres, hip-centred, y points down
     vis: np.ndarray     # (T, 33) visibility in [0,1]; NaN rows where nobody was detected
     people: np.ndarray | None = None  # (T,) number of sizeable people detected in the frame
+    solo_only: bool = False  # analysis option (not saved): ignore frames with several people in shot
 
     @property
     def times(self) -> np.ndarray:
@@ -72,6 +73,10 @@ def _body_size(landmarks) -> float:
     """Height of the bounding box of the confidently visible landmarks (normalized image units)."""
     ys = [p.y for p in landmarks if p.visibility > 0.5]
     return (max(ys) - min(ys)) if len(ys) >= 2 else 0.0
+
+
+def _hip_xy(landmarks) -> np.ndarray:
+    return np.array([(landmarks[L_HIP].x + landmarks[R_HIP].x) / 2, (landmarks[L_HIP].y + landmarks[R_HIP].y) / 2])
 
 
 def ensure_model(path: str = DEFAULT_MODEL) -> str:
@@ -100,6 +105,7 @@ def extract(video_path: str, model_path: str = DEFAULT_MODEL, max_seconds: float
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     image, world, vis, people = [], [], [], []
+    prev_hip = None
     nan = np.full((33, 3), np.nan)
     with vision.PoseLandmarker.create_from_options(opts) as landmarker:
         i = 0
@@ -111,17 +117,26 @@ def extract(video_path: str, model_path: str = DEFAULT_MODEL, max_seconds: float
             res = landmarker.detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb),
                                               int(round(i * 1000 / fps)))
             if res.pose_landmarks:
-                # Several people may be detected (e.g. an audience shot). Track the biggest one,
-                # and count how many others are of comparable size.
-                sizes = [_body_size(lm) for lm in res.pose_landmarks]
+                # Several people may be detected (group dances, bystanders, audience shots).
+                # Follow the same person as in the previous frame; after a cut or at the start,
+                # take the biggest. Also count how many people are of comparable size.
+                sizes = np.array([_body_size(lm) for lm in res.pose_landmarks])
+                hips = np.array([_hip_xy(lm) for lm in res.pose_landmarks])
                 k = int(np.argmax(sizes))
-                people.append(sum(sz >= 0.5 * sizes[k] for sz in sizes))
+                if prev_hip is not None:
+                    big = np.flatnonzero(sizes >= 0.5 * sizes.max())
+                    d = np.linalg.norm(hips[big] - prev_hip, axis=1)
+                    if d.min() < 0.15:
+                        k = int(big[np.argmin(d)])
+                prev_hip = hips[k]
+                people.append(int((sizes >= 0.5 * sizes[k]).sum()))
                 lm, wl = res.pose_landmarks[k], res.pose_world_landmarks[k]
                 image.append([[p.x, p.y, p.z] for p in lm])
                 world.append([[p.x, p.y, p.z] for p in wl])
                 vis.append([p.visibility for p in lm])
             else:
                 image.append(nan); world.append(nan); vis.append(np.full(33, np.nan)); people.append(0)
+                prev_hip = None
             i += 1
             if i % 300 == 0:
                 print(f"  pose: {i} frames ({i / fps:.0f}s)")

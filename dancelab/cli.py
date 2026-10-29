@@ -58,6 +58,7 @@ def cmd_analyze(a):
     os.makedirs(a.outdir, exist_ok=True)
     video = prepare(a.video, a.start, a.end, a.outdir)
     track = load_or_extract(video, a.outdir, a.model)
+    track.solo_only = a.solo
     detected = np.isfinite(track.image[:, 0, 0]).mean()
     usable = usable_mask(track)
     jok = joint_ok(track)
@@ -126,6 +127,7 @@ def cmd_compare(a):
     you_video = prepare(a.you, None, None, a.outdir, "you_clip")
     ref = load_or_extract(ref_video, a.outdir, a.model, "ref_poses")
     you = load_or_extract(you_video, a.outdir, a.model, "you_poses")
+    ref.solo_only = you.solo_only = a.solo
     if a.mirror:
         you_for_angles = C.mirror_track(you)
     else:
@@ -153,6 +155,8 @@ def main():
     an.add_argument("--view", choices=["overlay", "stick", "both"], default="both",
                     help="overlay = skeleton on the footage, stick = skeleton on black (default: both)")
     an.add_argument("--model", default=DEFAULT_MODEL)
+    an.add_argument("--solo", action="store_true",
+                    help="skip frames with several people in shot (e.g. a film cutting to the audience)")
     an.set_defaults(func=cmd_analyze)
     cp = sub.add_parser("compare", help="compare your recording against a reference")
     cp.add_argument("ref")
@@ -163,6 +167,8 @@ def main():
     cp.add_argument("--mirror", action="store_true", help="you danced it mirror-image (facing the screen)")
     cp.add_argument("--bpm", type=float, default=120)
     cp.add_argument("--model", default=DEFAULT_MODEL)
+    cp.add_argument("--solo", action="store_true",
+                    help="skip frames with several people in shot (e.g. a film cutting to the audience)")
     cp.set_defaults(func=cmd_compare)
     a = p.parse_args()
     a.func(a)

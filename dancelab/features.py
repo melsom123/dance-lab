@@ -51,11 +51,12 @@ def usable_mask(track: P.PoseTrack, min_run_s: float = 1.0) -> np.ndarray:
     """Frames worth analyzing: one dancer in shot with at least the torso (shoulders + hips) visible.
 
     Legs or arms may be out of frame (half-body shots); those limbs are masked per joint by
-    joint_ok. Frames with several similar-sized people (audience shots) are rejected, since
-    we can't tell which one is the dancer. Runs shorter than min_run_s are dropped as flicker.
+    joint_ok. With track.solo_only, frames with several similar-sized people are rejected too
+    (useful for films that cut to the audience; leave off for group dances or bystanders).
+    Runs shorter than min_run_s are dropped as flicker.
     """
     ok = joint_ok(track)[:, TORSO].all(axis=1)
-    if track.people is not None:
+    if track.solo_only and track.people is not None:
         ok &= track.people <= 1
     return _drop_short_runs(ok, int(min_run_s * track.fps))
 

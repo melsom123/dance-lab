@@ -22,7 +22,7 @@ for a, b in [(1, 4), (2, 5), (3, 6), (7, 8), (9, 10)] + [(i, i + 1) for i in ran
 def mirror_track(t: P.PoseTrack) -> P.PoseTrack:
     img = t.image[:, MIRROR_IDX].copy(); img[..., 0] = 1 - img[..., 0]
     wld = t.world[:, MIRROR_IDX].copy(); wld[..., 0] = -wld[..., 0]
-    return P.PoseTrack(t.fps, t.width, t.height, img, wld, t.vis[:, MIRROR_IDX])
+    return P.PoseTrack(t.fps, t.width, t.height, img, wld, t.vis[:, MIRROR_IDX], t.people, t.solo_only)
 
 
 def _feature_matrix(angles: dict) -> np.ndarray:

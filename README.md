@@ -21,8 +21,10 @@ Best results: one dancer, full body in frame (feet included), static camera, fac
 ## 2. Analyze it
 
 ```
-python -m dancelab analyze ref.mp4 --start 30 --end 60 -o out_ref
+python -m dancelab analyze ref.mp4 --start 30 --end 60 -o out_ref [--solo]
 ```
+Use `--solo` for film clips that cut to the audience: frames with several people in shot are skipped. Leave it off for group dances.
+
 Outputs in `out_ref/` (`--view overlay|stick|both`, default both):
 - `stick.mp4` skeleton only on black, centred and scaled to a steady size
 - `overlay.mp4` skeleton (blue = dancer's left, orange = right), beat flash, 1–8 count, live angles, movement-energy strip with beat ticks
