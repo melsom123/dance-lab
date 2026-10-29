@@ -1,0 +1,144 @@
+"""dancelab command line.
+
+  python -m dancelab analyze VIDEO [-o OUTDIR] [--start S --end E]
+  python -m dancelab compare REF_VIDEO YOUR_VIDEO [-o OUTDIR] [--mirror]
+"""
+from __future__ import annotations
+
+import argparse
+import csv
+import os
+import subprocess
+
+import numpy as np
+
+from . import compare as C
+from . import music, render
+from .features import joint_angles, motion_energy
+from .pose import DEFAULT_MODEL, PoseTrack, extract
+
+
+def trim(video, start, end, outdir):
+    if start is None and end is None:
+        return video
+    out = os.path.join(outdir, "clip.mp4")
+    cmd = ["ffmpeg", "-v", "error", "-y"]
+    if start is not None:
+        cmd += ["-ss", str(start)]
+    cmd += ["-i", video]
+    if end is not None:
+        cmd += ["-t", str(end - (start or 0))]
+    subprocess.run(cmd + ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-c:a", "aac", out], check=True)
+    return out
+
+
+def load_or_extract(video, outdir, model, name="poses"):
+    cache = os.path.join(outdir, f"{name}.npz")
+    if os.path.exists(cache) and os.path.getmtime(cache) > os.path.getmtime(video):
+        return PoseTrack.load(cache)
+    print(f"Extracting poses from {video} ...")
+    t = extract(video, model)
+    t.save(cache)
+    return t
+
+
+def cmd_analyze(a):
+    os.makedirs(a.outdir, exist_ok=True)
+    video = trim(a.video, a.start, a.end, a.outdir)
+    track = load_or_extract(video, a.outdir, a.model)
+    detected = np.isfinite(track.image[:, 0, 0]).mean()
+    angles = joint_angles(track)
+    energy = motion_energy(track)
+    beats = music.track_beats(video, a.bpm)
+    hits = music.hit_offsets(energy, track.fps, beats) if beats else None
+
+    with open(os.path.join(a.outdir, "angles.csv"), "w", newline="") as f:
+        wr = csv.writer(f)
+        names = list(angles)
+        wr.writerow(["time_s", "beat_count"] + names + ["movement_energy"])
+        for i, t in enumerate(track.times):
+            c = ""
+            if beats is not None and len(beats.times):
+                k = np.searchsorted(beats.times, t, side="right") - 1
+                c = int(beats.counts[k]) if k >= 0 else ""
+            wr.writerow([f"{t:.3f}", c] + [f"{angles[n][i]:.1f}" for n in names] + [f"{energy[i]:.3f}"])
+    if beats is not None:
+        with open(os.path.join(a.outdir, "beats.csv"), "w", newline="") as f:
+            wr = csv.writer(f)
+            wr.writerow(["beat", "time_s", "count", "accent_offset_ms"] + list(angles))
+            for k, bt in enumerate(beats.times):
+                i = min(int(round(bt * track.fps)), len(track.image) - 1)
+                off = "" if hits is None or not np.isfinite(hits[k]) else f"{hits[k] * 1000:.0f}"
+                wr.writerow([k, f"{bt:.3f}", beats.counts[k], off] + [f"{angles[n][i]:.1f}" for n in angles])
+
+    render.plot_angles(angles, energy, track.fps, beats, os.path.join(a.outdir, "angles.png"), hits,
+                       title=os.path.basename(a.video))
+    print("Rendering overlay video ...")
+    render.overlay_video(video, track, angles, energy, beats, os.path.join(a.outdir, "overlay.mp4"))
+
+    lines = [f"Video: {a.video}", f"Frames: {len(track.image)} @ {track.fps:.1f} fps, person detected in {detected:.0%}"]
+    if beats is not None:
+        lines.append(f"Tempo: {beats.tempo:.1f} BPM, {len(beats.times)} beats")
+        if hits is not None and np.isfinite(hits).any():
+            h = hits[np.isfinite(hits)] * 1000
+            lines.append(f"Movement accents vs beat: median {np.median(h):+.0f} ms "
+                         f"(negative = ahead of the beat), spread (IQR) {np.subtract(*np.percentile(h, [75, 25])):.0f} ms, "
+                         f"{len(h)}/{len(hits)} beats have a clear accent")
+    else:
+        lines.append("No audio track found; beat analysis skipped.")
+    rng = {n: (np.nanpercentile(v, 5), np.nanpercentile(v, 95)) for n, v in angles.items()}
+    lines.append("Range of motion (5th-95th percentile):")
+    lines += [f"  {n:<12} {lo:7.1f} .. {hi:7.1f}" for n, (lo, hi) in rng.items()]
+    report = "\n".join(lines)
+    open(os.path.join(a.outdir, "report.txt"), "w").write(report + "\n")
+    print(report)
+    print(f"\nOutputs in {a.outdir}: overlay.mp4, angles.png, angles.csv, beats.csv, report.txt")
+
+
+def cmd_compare(a):
+    os.makedirs(a.outdir, exist_ok=True)
+    ref_video = trim(a.ref, a.ref_start, a.ref_end, a.outdir)
+    ref = load_or_extract(ref_video, a.outdir, a.model, "ref_poses")
+    you = load_or_extract(a.you, a.outdir, a.model, "you_poses")
+    if a.mirror:
+        you_for_angles = C.mirror_track(you)
+    else:
+        you_for_angles = you
+    ra, ya = joint_angles(ref), joint_angles(you_for_angles)
+    ref_to_you, err = C.align(ref, you_for_angles, ra, ya)
+    beats = music.track_beats(ref_video, a.bpm)
+    print("Rendering comparison video ...")
+    C.comparison_video(ref_video, a.you, ref, you, ref_to_you, err, os.path.join(a.outdir, "compare.mp4"), beats,
+                         mirror=a.mirror)
+    rep = C.summary(err, ref.fps, beats)
+    open(os.path.join(a.outdir, "compare_report.txt"), "w").write(rep + "\n")
+    print(rep)
+
+
+def main():
+    p = argparse.ArgumentParser(prog="dancelab")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    an = sub.add_parser("analyze", help="pose + beat analysis of one video")
+    an.add_argument("video")
+    an.add_argument("-o", "--outdir", default="out")
+    an.add_argument("--start", type=float)
+    an.add_argument("--end", type=float)
+    an.add_argument("--bpm", type=float, default=120, help="starting guess for the tempo tracker")
+    an.add_argument("--model", default=DEFAULT_MODEL)
+    an.set_defaults(func=cmd_analyze)
+    cp = sub.add_parser("compare", help="compare your recording against a reference")
+    cp.add_argument("ref")
+    cp.add_argument("you")
+    cp.add_argument("-o", "--outdir", default="out_compare")
+    cp.add_argument("--ref-start", type=float)
+    cp.add_argument("--ref-end", type=float)
+    cp.add_argument("--mirror", action="store_true", help="you danced it mirror-image (facing the screen)")
+    cp.add_argument("--bpm", type=float, default=120)
+    cp.add_argument("--model", default=DEFAULT_MODEL)
+    cp.set_defaults(func=cmd_compare)
+    a = p.parse_args()
+    a.func(a)
+
+
+if __name__ == "__main__":
+    main()

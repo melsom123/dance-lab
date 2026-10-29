@@ -1,0 +1,7 @@
+mediapipe>=0.10.14
+opencv-python
+librosa>=0.10
+scipy
+numpy
+matplotlib
+yt-dlp

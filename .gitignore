@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+models/
+out*/
+*.mp4
+*.avi
+*.mov
+*.npz
